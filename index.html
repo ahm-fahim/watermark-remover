@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Watermark Remover & Downloader</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #f4f4f9; color: #333; max-width: 800px; margin: 40px auto; padding: 20px; text-align: center; }
+        .canvas-container { position: relative; display: inline-block; background: #ddd; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1); margin: 20px 0; max-width: 100%; }
+        canvas { display: block; cursor: crosshair; max-width: 100%; }
+        .controls { display: flex; justify-content: center; gap: 15px; align-items: center; margin-top: 15px; flex-wrap: wrap; }
+        button, input[type="file"]::-webkit-file-upload-button { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        #downloadBtn { background: #28a745; display: none; } /* Green download button */
+        #downloadBtn:hover { background: #218838; }
+        #brushSize { width: 120px; }
+    </style>
+</head>
+<body>
+
+    <h1>AI Watermark Remover</h1>
+    <p>Upload an image, brush over the watermark, process it, and download the result!</p>
+
+    <input type="file" id="upload" accept="image/*"><br>
+
+    <div class="canvas-container" id="container" style="display:none;">
+        <canvas id="viewCanvas"></canvas>
+    </div>
+
+    <div class="controls" id="controls" style="display:none;">
+        <label>Brush Size: <input type="range" id="brushSize" min="5" max="50" value="20"></label>
+        <button id="clearBtn">Clear Selection</button>
+        <button id="processBtn">Remove Watermark</button>
+        <button id="downloadBtn">Download Cleaned Image</button>
+    </div>
+
+    <script>
+        const upload = document.getElementById('upload');
+        const viewCanvas = document.getElementById('viewCanvas');
+        const ctx = viewCanvas.getContext('2d');
+        const brushSizeInput = document.getElementById('brushSize');
+        const clearBtn = document.getElementById('clearBtn');
+        const processBtn = document.getElementById('processBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+
+        const maskCanvas = document.createElement('canvas');
+        const maskCtx = maskCanvas.getContext('2d');
+
+        let originalImage = new Image();
+        let isDrawing = false;
+        let originalFileName = "cleaned-image.jpg";
+
+        upload.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            // Capture original file name to reuse during download
+            originalFileName = "cleaned_" + file.name;
+            
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                originalImage.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        originalImage.onload = () => {
+            viewCanvas.width = maskCanvas.width = originalImage.width;
+            viewCanvas.height = maskCanvas.height = originalImage.height;
+            
+            ctx.drawImage(originalImage, 0, 0);
+            
+            maskCtx.fillStyle = 'black';
+            maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+            
+            document.getElementById('container').style.display = 'inline-block';
+            document.getElementById('controls').style.display = 'flex';
+            downloadBtn.style.display = 'none'; // Hide download button for fresh uploads
+        };
+
+        function draw(e) {
+            if (!isDrawing) return;
+            
+            const rect = viewCanvas.getBoundingClientRect();
+            const scaleX = viewCanvas.width / rect.width;
+            const scaleY = viewCanvas.height / rect.height;
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            const r = brushSizeInput.value;
+
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+            ctx.beginPath();
+            ctx.arc(x, y, r, 0, Math.PI * 2);
+            ctx.fill();
+
+            maskCtx.fillStyle = 'white';
+            maskCtx.beginPath();
+            maskCtx.arc(x, y, r, 0, Math.PI * 2);
+            maskCtx.fill();
+        }
+
+        viewCanvas.addEventListener('mousedown', () => isDrawing = true);
+        viewCanvas.addEventListener('mousemove', draw);
+        window.addEventListener('mouseup', () => isDrawing = false);
+
+        clearBtn.addEventListener('click', () => {
+            ctx.drawImage(originalImage, 0, 0);
+            maskCtx.fillStyle = 'black';
+            maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+            downloadBtn.style.display = 'none';
+        });
+
+        processBtn.addEventListener('click', async () => {
+            processBtn.disabled = true;
+            processBtn.innerText = "Processing...";
+
+            const getBlob = (canvas) => new Promise(res => canvas.toBlob(res, 'image/jpeg'));
+            
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = viewCanvas.width; tempCanvas.height = viewCanvas.height;
+            tempCanvas.getContext('2d').drawImage(originalImage, 0, 0);
+            
+            const imageBlob = await getBlob(tempCanvas);
+            const maskBlob = await getBlob(maskCanvas);
+
+            const formData = new FormData();
+            formData.append('image', imageBlob, 'image.jpg');
+            formData.append('mask', maskBlob, 'mask.jpg');
+
+            try {
+                const response = await fetch('http://127.0.0.1:8000/api/remove-watermark', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) throw new Error("Processing failed");
+
+                const resultBlob = await response.blob();
+                const resultUrl = URL.createObjectURL(resultBlob);
+                
+                const cleanImg = new Image();
+                cleanImg.onload = () => {
+                    ctx.drawImage(cleanImg, 0, 0);
+                    originalImage.src = resultUrl; 
+                    
+                    // Show the download button once processing succeeds
+                    downloadBtn.style.display = 'inline-block';
+                };
+                cleanImg.src = resultUrl;
+            } catch (err) {
+                alert("Error removing watermark: " + err.message);
+            } finally {
+                processBtn.disabled = false;
+                processBtn.innerText = "Remove Watermark";
+            }
+        });
+
+        // Handle Download Action
+        downloadBtn.addEventListener('click', () => {
+            // Turn the current canvas contents into a downloadable link
+            const link = document.createElement('a');
+            link.download = originalFileName;
+            link.href = viewCanvas.toDataURL('image/jpeg', 0.9);
+            link.click();
+        });
+    </script>
+</body>
+</html>
